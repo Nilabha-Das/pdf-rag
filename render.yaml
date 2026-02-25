@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: pdf-rag-backend
+    runtime: python
+    rootDir: server
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    plan: free
+    healthCheckPath: /
+    envVars:
+      - key: GROQ_API_KEY
+        sync: false        # Set this in the Render dashboard
+      - key: QDRANT_URL
+        sync: false        # Paste your Qdrant Cloud cluster URL here
+      - key: QDRANT_API_KEY
+        sync: false        # Paste your Qdrant Cloud API key here
+      - key: PYTHONUNBUFFERED
+        value: "1"

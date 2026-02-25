@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+
+# Env files (never commit secrets)
+.env
+.env.local
+.env.production
+
+# Uploaded PDFs (ephemeral)
+server/uploads/*.pdf
+
+# SQLite DB
+server/*.db
+
+# Node
+node_modules/
+.next/
+.pnpm-store/
+
+# Misc
+.DS_Store
+*.log
