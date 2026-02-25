@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <!-- Background circle -->
+  <circle cx="32" cy="32" r="32" fill="#0f172a"/>
+
+  <!-- PDF document body -->
+  <rect x="14" y="10" width="26" height="34" rx="3" fill="#1e293b" stroke="#3b82f6" stroke-width="1.5"/>
+
+  <!-- PDF folded corner -->
+  <path d="M34 10 L40 16 L34 16 Z" fill="#3b82f6" opacity="0.6"/>
+
+  <!-- PDF lines -->
+  <line x1="19" y1="22" x2="35" y2="22" stroke="#94a3b8" stroke-width="1.5" stroke-linecap="round"/>
+  <line x1="19" y1="27" x2="35" y2="27" stroke="#94a3b8" stroke-width="1.5" stroke-linecap="round"/>
+  <line x1="19" y1="32" x2="29" y2="32" stroke="#94a3b8" stroke-width="1.5" stroke-linecap="round"/>
+
+  <!-- PDF label -->
+  <rect x="14" y="36" width="14" height="8" rx="2" fill="#ef4444"/>
+  <text x="21" y="44" font-family="Arial" font-size="5.5" font-weight="bold" fill="white" text-anchor="middle">PDF</text>
+
+  <!-- Chat bubble -->
+  <rect x="28" y="36" width="22" height="16" rx="4" fill="#3b82f6"/>
+  <path d="M30 52 L28 56 L35 52 Z" fill="#3b82f6"/>
+
+  <!-- Chat dots -->
+  <circle cx="35" cy="44" r="1.8" fill="white"/>
+  <circle cx="39" cy="44" r="1.8" fill="white"/>
+  <circle cx="43" cy="44" r="1.8" fill="white"/>
+</svg>
