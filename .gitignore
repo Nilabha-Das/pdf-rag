@@ -14,6 +14,8 @@ server/uploads/*.pdf
 
 # SQLite DB
 server/*.db
+server/*.db-shm
+server/*.db-wal
 
 # Node
 node_modules/
