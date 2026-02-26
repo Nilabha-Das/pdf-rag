@@ -4,6 +4,14 @@ A full-stack Retrieval-Augmented Generation (RAG) app that lets you upload PDFs,
 
 ---
 
+## Screenshots
+
+| Translation (10+ languages) | In-app PDF Preview |
+|---|---|
+| ![Translation feature](screenshots/translate.png) | ![PDF Preview](screenshots/preview.png) |
+
+---
+
 ## Features
 
 - **Chat with PDFs** — Ask natural language questions; answers are grounded in the document content via semantic search
