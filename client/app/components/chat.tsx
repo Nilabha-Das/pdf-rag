@@ -507,18 +507,34 @@ export const ChatComponent: React.FC<ChatProps> = ({
     try {
       const history = messages.map((m) => ({ role: m.role, content: m.content }));
 
-      // ── Retry loop for 503 (Render free tier cold start) ──
+      // ── Step 1: Wake up Render free tier by pinging health endpoint ──
+      const setWaking = (msg: string) =>
+        setMessages((prev) => {
+          const updated = [...prev];
+          updated[updated.length - 1] = { role: 'assistant', content: msg };
+          return updated;
+        });
+
+      // Ping until server responds (up to ~3 min for Render cold start)
+      const MAX_WAKE_ATTEMPTS = 12;
+      let serverAwake = false;
+      for (let w = 0; w < MAX_WAKE_ATTEMPTS; w++) {
+        if (w > 0) setWaking(`⏳ Server is waking up… (${w * 15}s elapsed, please wait)`);
+        try {
+          const ping = await fetch(`${API_BASE}/`, { method: 'GET' });
+          if (ping.ok) { serverAwake = true; break; }
+        } catch { /* still sleeping */ }
+        await new Promise((r) => setTimeout(r, 15_000));
+      }
+      if (!serverAwake) throw new Error('Server unreachable after 3 minutes');
+
+      // Clear waking message
+      setWaking('');
+
+      // ── Step 2: Send actual chat request (server is now awake) ──
       let res: Response | null = null;
-      const MAX_CHAT_RETRIES = 5;
+      const MAX_CHAT_RETRIES = 3;
       for (let attempt = 0; attempt < MAX_CHAT_RETRIES; attempt++) {
-        if (attempt > 0) {
-          setMessages((prev) => {
-            const updated = [...prev];
-            updated[updated.length - 1] = { role: 'assistant', content: `⏳ Server is waking up… (attempt ${attempt + 1}/${MAX_CHAT_RETRIES}, please wait 15s)` };
-            return updated;
-          });
-          await new Promise((r) => setTimeout(r, 15_000));
-        }
         try {
           res = await fetch(`${API_BASE}/chat/stream`, {
             method: 'POST',
@@ -526,20 +542,16 @@ export const ChatComponent: React.FC<ChatProps> = ({
             body: JSON.stringify({ message: trimmed, history, active_pdfs: pdfLibrary.map((p) => p.name) }),
           });
           if (res.ok) break;
-          if (res.status === 503 || res.status === 502) continue;
+          if (res.status === 503 || res.status === 502) {
+            await new Promise((r) => setTimeout(r, 5_000));
+            continue;
+          }
           break;
         } catch {
           if (attempt === MAX_CHAT_RETRIES - 1) throw new Error('Server unreachable');
-          continue;
+          await new Promise((r) => setTimeout(r, 5_000));
         }
       }
-
-      // Clear the "waking up" placeholder before streaming real tokens
-      setMessages((prev) => {
-        const updated = [...prev];
-        updated[updated.length - 1] = { role: 'assistant', content: '' };
-        return updated;
-      });
 
       if (!res || !res.ok || !res.body) throw new Error('Stream failed');
 
