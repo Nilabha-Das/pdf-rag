@@ -4,16 +4,18 @@ services:
     runtime: python
     rootDir: server
     pythonVersion: "3.11"
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install -r requirements.txt && python -c "import os; os.environ['FASTEMBED_CACHE_PATH']='/opt/render/project/src/model_cache'; from fastembed import TextEmbedding; list(TextEmbedding('BAAI/bge-small-en-v1.5').embed(['warmup']))"
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     plan: free
     healthCheckPath: /
     envVars:
       - key: GROQ_API_KEY
-        sync: false        # Set this in the Render dashboard
+        sync: false
       - key: QDRANT_URL
-        sync: false        # Paste your Qdrant Cloud cluster URL here
+        sync: false
       - key: QDRANT_API_KEY
-        sync: false        # Paste your Qdrant Cloud API key here
+        sync: false
       - key: PYTHONUNBUFFERED
         value: "1"
+      - key: FASTEMBED_CACHE_PATH
+        value: /opt/render/project/src/model_cache

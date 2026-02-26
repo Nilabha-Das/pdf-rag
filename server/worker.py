@@ -2,8 +2,7 @@ import asyncio
 import os
 import uuid
 import threading
-import httpx
-from langchain_core.embeddings import Embeddings
+from fastembed import TextEmbedding
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_groq import ChatGroq
@@ -15,43 +14,30 @@ from qdrant_client.models import Distance, VectorParams, PointStruct, Filter, Fi
 QDRANT_URL  = os.getenv("QDRANT_URL",  "http://localhost:6333")
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY", None)
 COLLECTION  = "pdf-rag"
-EMBED_MODEL = "nomic-embed-text-v1_5"    # Groq cloud embedding — zero local download
+EMBED_MODEL = "BAAI/bge-small-en-v1.5"  # 67 MB — cached at build time on Render
 CHAT_MODEL  = "llama-3.3-70b-versatile"  # Groq free tier — very fast
-VECTOR_SIZE = 768                         # nomic-embed-text-v1_5 output dimension
+VECTOR_SIZE = 384                         # bge-small output dimension
 UPLOAD_DIR  = os.path.join(os.path.dirname(__file__), "uploads")
 
-GROQ_EMBED_URL = "https://api.groq.com/openai/v1/embeddings"
+# ── FastEmbed singleton ───────────────────────────────────────────────────────
+_fastembed_model: TextEmbedding | None = None
+_fastembed_lock = threading.Lock()
+
+
+def _get_fastembed_model() -> TextEmbedding:
+    global _fastembed_model
+    with _fastembed_lock:
+        if _fastembed_model is None:
+            print(f"[worker] Loading FastEmbed model '{EMBED_MODEL}'…")
+            _fastembed_model = TextEmbedding(EMBED_MODEL)
+            print("[worker] FastEmbed model ready.")
+    return _fastembed_model
 
 
 def _batch_embed(texts: list[str]) -> list[list[float]]:
-    """Embed texts via Groq cloud API — no local model or download needed."""
-    api_key = os.getenv("GROQ_API_KEY")
-    if not api_key:
-        raise RuntimeError("GROQ_API_KEY is not set.")
-    all_vectors: list[list[float]] = []
-    batch_size = 96  # Groq max input limit safety margin
-    for i in range(0, len(texts), batch_size):
-        batch = texts[i : i + batch_size]
-        resp = httpx.post(
-            GROQ_EMBED_URL,
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json={"model": EMBED_MODEL, "input": batch},
-            timeout=60,
-        )
-        resp.raise_for_status()
-        data = resp.json()["data"]
-        all_vectors.extend(
-            item["embedding"] for item in sorted(data, key=lambda x: x["index"])
-        )
-    return all_vectors
-
-
-class _GroqEmbeddings(Embeddings):
-    """LangChain-compatible wrapper around _batch_embed for QdrantVectorStore."""
-    def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        return _batch_embed(texts)
-    def embed_query(self, text: str) -> list[float]:
-        return _batch_embed([text])[0]
+    """Embed texts via FastEmbed (model cached on disk from build time)."""
+    model = _get_fastembed_model()
+    return [v.tolist() for v in model.embed(texts)]
 
 # ── Singletons — created once, reused on every request ──────────────────────
 _qdrant_client: QdrantClient | None = None
@@ -115,12 +101,13 @@ def reset_collection(client: QdrantClient):
 def get_vector_store() -> QdrantVectorStore:
     global _vector_store
     if _vector_store is None:
+        from langchain_community.embeddings.fastembed import FastEmbedEmbeddings
         client = get_qdrant_client()
         ensure_collection(client)
         _vector_store = QdrantVectorStore(
             client=client,
             collection_name=COLLECTION,
-            embedding=_GroqEmbeddings(),
+            embedding=FastEmbedEmbeddings(model_name=EMBED_MODEL),
         )
         print("[worker] Vector store initialised.")
     return _vector_store
