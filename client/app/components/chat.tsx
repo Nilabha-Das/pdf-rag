@@ -2,6 +2,8 @@
 
 import * as React from 'react';
 import Image from 'next/image';
+
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? 'http://localhost:8000';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
@@ -193,7 +195,7 @@ export const ChatComponent: React.FC<ChatProps> = ({
     try {
       const formData = new FormData();
       formData.append('pdf', file);
-      const res = await fetch('http://localhost:8000/upload/pdf', {
+      const res = await fetch(`${API_BASE}/upload/pdf`, {
         method: 'POST',
         body: formData,
       });
@@ -225,7 +227,7 @@ export const ChatComponent: React.FC<ChatProps> = ({
         }
         try {
           const statusRes = await fetch(
-            `http://localhost:8000/upload/status?filename=${encodeURIComponent(serverFilename)}`
+            `${API_BASE}/upload/status?filename=${encodeURIComponent(serverFilename)}`
           );
           if (statusRes.ok) {
             const statusData = await statusRes.json();
@@ -265,7 +267,7 @@ export const ChatComponent: React.FC<ChatProps> = ({
   // ── Delete PDF from library + server ─────────────────────────────────────
   const handleDeletePdf = async (name: string) => {
     try {
-      await fetch(`http://localhost:8000/pdfs/${encodeURIComponent(name)}`, { method: 'DELETE' });
+      await fetch(`${API_BASE}/pdfs/${encodeURIComponent(name)}`, { method: 'DELETE' });
     } catch { /* non-critical */ }
     setPdfLibrary((prev) => {
       const entry = prev.find((p) => p.name === name);
@@ -282,7 +284,7 @@ export const ChatComponent: React.FC<ChatProps> = ({
     const outName = mergeName.trim() || `merged_${Date.now()}`;
     setMergeLoading(true);
     try {
-      const res = await fetch('http://localhost:8000/pdf/merge', {
+      const res = await fetch(`${API_BASE}/pdf/merge`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ filenames: mergeSelected, output_name: outName }),
@@ -307,7 +309,7 @@ export const ChatComponent: React.FC<ChatProps> = ({
         count++;
         if (count >= 30) { setUploadStatus('success'); clearInterval(poll); return; }
         try {
-          const sr = await fetch(`http://localhost:8000/upload/status?filename=${encodeURIComponent(serverName)}`);
+          const sr = await fetch(`${API_BASE}/upload/status?filename=${encodeURIComponent(serverName)}`);
           if (sr.ok) {
             const sd = await sr.json();
             if (sd.status === 'done') { setUploadStatus('success'); clearInterval(poll); }
@@ -334,7 +336,7 @@ export const ChatComponent: React.FC<ChatProps> = ({
     let fullText = '';
     let hadError = false;
     try {
-      const res = await fetch('http://localhost:8000/pdf/translate/stream', {
+      const res = await fetch(`${API_BASE}/pdf/translate/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ filename, language: lang }),
@@ -472,7 +474,7 @@ export const ChatComponent: React.FC<ChatProps> = ({
 
     try {
       const history = messages.map((m) => ({ role: m.role, content: m.content }));
-      const res = await fetch('http://localhost:8000/chat/stream', {
+      const res = await fetch(`${API_BASE}/chat/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -524,7 +526,7 @@ export const ChatComponent: React.FC<ChatProps> = ({
         setSuggestionsLoading(true);
         try {
           const sugRes = await fetch(
-            `http://localhost:8000/suggestions?message=${encodeURIComponent(trimmed)}&answer=${encodeURIComponent(fullAnswer)}`
+            `${API_BASE}/suggestions?message=${encodeURIComponent(trimmed)}&answer=${encodeURIComponent(fullAnswer)}`
           );
           if (sugRes.ok) {
             const sugData = await sugRes.json();

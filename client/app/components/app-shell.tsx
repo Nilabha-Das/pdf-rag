@@ -51,7 +51,13 @@ export const AppShell: React.FC = () => {
     if (!userId) return;
 
     setHistoryLoading(true);
-    fetch(`${API_BASE}/history?user_id=${encodeURIComponent(userId)}`)
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10_000); // 10 s timeout
+
+    fetch(`${API_BASE}/history?user_id=${encodeURIComponent(userId)}`, {
+      signal: controller.signal,
+    })
       .then((res) => res.json())
       .then((data) => {
         const loaded: Session[] = data.sessions ?? [];
@@ -65,12 +71,20 @@ export const AppShell: React.FC = () => {
         }
       })
       .catch(() => {
-        // Fallback: start with a blank session if the API is unreachable
+        // Fallback: start with a blank session if the API is unreachable / timed out
         const first = createSession();
         setSessions([first]);
         setActiveSessionId(first.id);
       })
-      .finally(() => setHistoryLoading(false));
+      .finally(() => {
+        clearTimeout(timeoutId);
+        setHistoryLoading(false);
+      });
+
+    return () => {
+      controller.abort();
+      clearTimeout(timeoutId);
+    };
   }, [userId]);
 
   // ── Persist a session to the backend ────────────────────────────────────
