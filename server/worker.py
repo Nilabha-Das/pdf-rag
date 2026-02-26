@@ -30,7 +30,8 @@ def _get_fastembed_model() -> TextEmbedding:
     with _fastembed_lock:
         if _fastembed_model is None:
             print(f"[worker] Loading FastEmbed model '{EMBED_MODEL}'…")
-            _fastembed_model = TextEmbedding(EMBED_MODEL)
+            # threads=0 → ONNX runtime uses all available CPU cores automatically
+            _fastembed_model = TextEmbedding(EMBED_MODEL, threads=0)
             print("[worker] FastEmbed model ready.")
     return _fastembed_model
 
@@ -155,7 +156,7 @@ def process_pdf(file_path: str):
         docs = loader.load()
 
         # ── 2. Split — larger chunks + less overlap → fewer embedding calls ──
-        splitter = RecursiveCharacterTextSplitter(chunk_size=2000, chunk_overlap=100)
+        splitter = RecursiveCharacterTextSplitter(chunk_size=4000, chunk_overlap=200)
         chunks = splitter.split_documents(docs)
         print(f"[worker] Split into {len(chunks)} chunks")
 
