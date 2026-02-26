@@ -3,6 +3,7 @@ import os
 import uuid
 import threading
 from fastembed import TextEmbedding
+from langchain_core.embeddings import Embeddings
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_groq import ChatGroq
@@ -38,6 +39,14 @@ def _batch_embed(texts: list[str]) -> list[list[float]]:
     """Embed texts via FastEmbed (model cached on disk from build time)."""
     model = _get_fastembed_model()
     return [v.tolist() for v in model.embed(texts)]
+
+
+class _FastEmbeddings(Embeddings):
+    """Thin LangChain Embeddings wrapper around _batch_embed."""
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return _batch_embed(texts)
+    def embed_query(self, text: str) -> list[float]:
+        return _batch_embed([text])[0]
 
 # ── Singletons — created once, reused on every request ──────────────────────
 _qdrant_client: QdrantClient | None = None
@@ -101,13 +110,12 @@ def reset_collection(client: QdrantClient):
 def get_vector_store() -> QdrantVectorStore:
     global _vector_store
     if _vector_store is None:
-        from langchain_community.embeddings.fastembed import FastEmbedEmbeddings
         client = get_qdrant_client()
         ensure_collection(client)
         _vector_store = QdrantVectorStore(
             client=client,
             collection_name=COLLECTION,
-            embedding=FastEmbedEmbeddings(model_name=EMBED_MODEL),
+            embedding=_FastEmbeddings(),
         )
         print("[worker] Vector store initialised.")
     return _vector_store
