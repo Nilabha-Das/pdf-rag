@@ -12,10 +12,12 @@ from fastapi.responses import JSONResponse, StreamingResponse, FileResponse
 from pydantic import BaseModel
 
 from worker import (
-    process_pdf, chat_with_pdf, stream_chat_with_pdf, get_suggestions,
+    process_pdf, stream_chat_with_pdf, get_suggestions,
     get_embedding_status, list_embedded_pdfs, delete_pdf_from_collection,
-    merge_pdfs, translate_pdf_stream, UPLOAD_DIR as WORKER_UPLOAD_DIR,
+    merge_pdfs, translate_pdf_stream, UPLOAD_DIR,
 )
+
+WORKER_UPLOAD_DIR = UPLOAD_DIR
 from database import init_db, get_sessions, upsert_session, delete_session
 
 # ──────────────────────────────────────────────
@@ -32,10 +34,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-UPLOAD_DIR = "uploads"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
-
 
 # ──────────────────────────────────────────────
 # Routes
@@ -101,8 +99,7 @@ async def merge_pdfs_route(req: MergeRequest, background_tasks: BackgroundTasks)
         output_path = merge_pdfs(req.filenames, req.output_name)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    import os as _os
-    filename = _os.path.basename(output_path)
+    filename = os.path.basename(output_path)
     background_tasks.add_task(process_pdf, output_path)
     return {"message": "Merge complete. Embedding in progress.", "filename": filename}
 
@@ -133,19 +130,6 @@ def upload_status(filename: str):
         raise HTTPException(status_code=400, detail="filename is required.")
     status = get_embedding_status(filename)
     return {"filename": filename, "status": status}
-
-
-@app.get("/chat")
-async def chat(message: str):
-    """
-    Query the vector store and get an answer from Ollama based on the PDF context.
-    Example: GET /chat?message=What is this document about?
-    """
-    if not message or not message.strip():
-        raise HTTPException(status_code=400, detail="message query param is required.")
-
-    result = await chat_with_pdf(message)
-    return result
 
 
 class ChatRequest(BaseModel):

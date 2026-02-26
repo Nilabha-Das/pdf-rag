@@ -3,12 +3,10 @@
 import * as React from 'react';
 import { Sidebar } from './sidebar';
 import { ChatComponent } from './chat';
-import type { Message, Session } from './types';
+import { API_BASE } from '../../lib/config';
+import type { Message, Session, PdfEntry } from './types';
 
 export type { Message, Session };
-
-const IS_LOCAL = typeof window !== 'undefined' && window.location.hostname === 'localhost';
-const API_BASE = IS_LOCAL ? 'http://localhost:8000' : 'https://pdf-rag-iwnh.onrender.com';
 
 function generateId() {
   return Math.random().toString(36).slice(2) + Date.now().toString(36);
@@ -39,6 +37,19 @@ export const AppShell: React.FC = () => {
   const [sessions, setSessions] = React.useState<Session[]>([]);
   const [activeSessionId, setActiveSessionId] = React.useState<string>('');
   const [historyLoading, setHistoryLoading] = React.useState(true);
+
+  // PDF library is shared across all sessions so uploading once persists on session switch.
+  const [pdfLibrary, setPdfLibrary] = React.useState<PdfEntry[]>([]);
+
+  // Revoke blob URLs when the app unmounts to prevent memory leaks.
+  React.useEffect(() => {
+    return () => {
+      pdfLibrary.forEach((p) => {
+        if (p.objectUrl.startsWith('blob:')) URL.revokeObjectURL(p.objectUrl);
+      });
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Keep a ref that always holds the latest sessions so async callbacks
   // (like handleSaveSession) can read up-to-date data without stale closures.
@@ -225,6 +236,8 @@ export const AppShell: React.FC = () => {
           initialMessages={activeSession.messages}
           onMessagesChange={handleMessagesChange}
           onSaveSession={handleSaveSession}
+          pdfLibrary={pdfLibrary}
+          setPdfLibrary={setPdfLibrary}
         />
       )}
     </div>

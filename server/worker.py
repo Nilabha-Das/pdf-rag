@@ -9,15 +9,19 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_groq import ChatGroq
 from langchain_qdrant import QdrantVectorStore
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, VectorParams, PointStruct, Filter, FieldCondition, MatchValue
+from qdrant_client.models import (
+    Distance, VectorParams, PointStruct,
+    Filter, FieldCondition, MatchValue,
+    FilterSelector,
+)
 
 # Read from env so local dev and cloud both work without code changes
 QDRANT_URL  = os.getenv("QDRANT_URL",  "http://localhost:6333")
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY", None)
 COLLECTION  = "pdf-rag"
-EMBED_MODEL = "BAAI/bge-small-en-v1.5"  # 67 MB — cached at build time on Render
+EMBED_MODEL = "nomic-ai/nomic-embed-text-v1.5"  # original local model
 CHAT_MODEL  = "llama-3.3-70b-versatile"  # Groq free tier — very fast
-VECTOR_SIZE = 384                         # bge-small output dimension
+VECTOR_SIZE = 768                         # nomic-embed-text output dimension
 UPLOAD_DIR  = os.path.join(os.path.dirname(__file__), "uploads")
 
 # ── FastEmbed singleton ───────────────────────────────────────────────────────
@@ -54,15 +58,56 @@ _qdrant_client: QdrantClient | None = None
 _vector_store: QdrantVectorStore | None = None
 _llm: ChatGroq | None = None
 
-# ── Embedding status tracking (#11) ─────────────────────────────────────────
+# ── Embedding status tracking (⌑16) ───────────────────────────────────────────────
 _embedding_status: dict[str, str] = {}   # basename -> 'processing' | 'done' | 'error'
 _embedding_lock = threading.Lock()
-_embedded_pdfs: list[str] = []    # basenames of successfully embedded PDFs
+# None = not yet loaded from Qdrant; populated lazily on first access after restart.
+_embedded_pdfs: list[str] | None = None
 
 
 def get_embedding_status(filename: str) -> str:
     """Return current embedding status for a filename."""
     return _embedding_status.get(filename, 'unknown')
+
+
+def _reload_pdfs_from_qdrant() -> list[str]:
+    """Scroll Qdrant once to recover all unique PDF filenames after a server restart."""
+    try:
+        client = get_qdrant_client()
+        existing = [c.name for c in client.get_collections().collections]
+        if COLLECTION not in existing:
+            return []
+        seen: set[str] = set()
+        offset = None
+        while True:
+            result, next_offset = client.scroll(
+                collection_name=COLLECTION,
+                limit=1000,
+                offset=offset,
+                with_payload=["filename", "metadata"],
+                with_vectors=False,
+            )
+            for point in result:
+                fname = point.payload.get("filename") or os.path.basename(
+                    point.payload.get("metadata", {}).get("source", "")
+                )
+                if fname:
+                    seen.add(fname)
+            if next_offset is None:
+                break
+            offset = next_offset
+        print(f"[worker] Reloaded {len(seen)} PDFs from Qdrant.")
+        return list(seen)
+    except Exception as exc:
+        print(f"[worker] Could not reload PDF list from Qdrant: {exc}")
+        return []
+
+
+def _ensure_pdfs_loaded() -> None:
+    """Lazily initialise _embedded_pdfs from Qdrant if not yet loaded (e.g. after restart)."""
+    global _embedded_pdfs
+    if _embedded_pdfs is None:
+        _embedded_pdfs = _reload_pdfs_from_qdrant()
 
 
 def get_qdrant_client() -> QdrantClient:
@@ -93,19 +138,6 @@ def ensure_collection(client: QdrantClient):
             vectors_config=VectorParams(size=VECTOR_SIZE, distance=Distance.COSINE),
         )
         print(f"[worker] Collection '{COLLECTION}' created with size={VECTOR_SIZE}.")
-
-
-def reset_collection(client: QdrantClient):
-    """Drop and recreate the collection, wiping all previously embedded PDFs."""
-    existing = [c.name for c in client.get_collections().collections]
-    if COLLECTION in existing:
-        client.delete_collection(COLLECTION)
-        print(f"[worker] Collection '{COLLECTION}' deleted.")
-    client.create_collection(
-        collection_name=COLLECTION,
-        vectors_config=VectorParams(size=VECTOR_SIZE, distance=Distance.COSINE),
-    )
-    print(f"[worker] Collection '{COLLECTION}' recreated.")
 
 
 def get_vector_store() -> QdrantVectorStore:
@@ -142,6 +174,7 @@ def get_llm() -> ChatGroq:
 def process_pdf(file_path: str):
     """Load, chunk and embed a PDF file into Qdrant. Called as a background task."""
     filename = os.path.basename(file_path)
+    _ensure_pdfs_loaded()  # Recover list from Qdrant if this is a fresh process
     with _embedding_lock:
         _embedding_status[filename] = 'processing'
     print(f"[worker] Processing: {file_path}")
@@ -187,7 +220,7 @@ def process_pdf(file_path: str):
 
         with _embedding_lock:
             _embedding_status[filename] = 'done'
-        if filename not in _embedded_pdfs:
+        if _embedded_pdfs is not None and filename not in _embedded_pdfs:
             _embedded_pdfs.append(filename)
 
     except Exception as exc:
@@ -301,6 +334,7 @@ async def stream_chat_with_pdf(
     """Yields typed event dicts: {type: 'token', data: str} and {type: 'sources', data: list}."""
 
     QDRANT_TIMEOUT = 12  # seconds — fail fast on Render free tier instead of hanging
+    _ensure_pdfs_loaded()  # ensure list is populated after a cold restart
 
     if active_pdfs:
         # Per-PDF filtered retrieval — guarantees every file contributes chunks
@@ -396,8 +430,9 @@ async def get_suggestions(query: str, answer: str) -> list[str]:
 # ── Multi-PDF management ─────────────────────────────────────────────────────
 
 def list_embedded_pdfs() -> list[str]:
-    """Return basenames of all successfully embedded PDFs."""
-    return list(_embedded_pdfs)
+    """Return basenames of all successfully embedded PDFs. Lazily reloaded from Qdrant on restart."""
+    _ensure_pdfs_loaded()
+    return list(_embedded_pdfs or [])
 
 
 def delete_pdf_from_collection(filename: str) -> None:
@@ -408,40 +443,25 @@ def delete_pdf_from_collection(filename: str) -> None:
     if COLLECTION not in existing:
         return
 
-    # Scroll to collect point IDs whose metadata.source basename matches
-    ids_to_delete: list = []
-    offset = None
-    while True:
-        result, next_offset = client.scroll(
-            collection_name=COLLECTION,
-            limit=1000,
-            offset=offset,
-            with_payload=["metadata"],
-            with_vectors=False,
-        )
-        for point in result:
-            src = point.payload.get("metadata", {}).get("source", "")
-            if os.path.basename(src) == filename or src == filename:
-                ids_to_delete.append(point.id)
-        if next_offset is None:
-            break
-        offset = next_offset
-
-    if ids_to_delete:
-        from qdrant_client.models import PointIdsList
-        client.delete(
-            collection_name=COLLECTION,
-            points_selector=PointIdsList(points=ids_to_delete),
-        )
+    # Fast filter-based deletion — no full-collection scroll needed
+    client.delete(
+        collection_name=COLLECTION,
+        points_selector=FilterSelector(
+            filter=Filter(
+                must=[FieldCondition(key="filename", match=MatchValue(value=filename))]
+            )
+        ),
+    )
 
     with _embedding_lock:
         _embedding_status.pop(filename, None)
-    _embedded_pdfs = [f for f in _embedded_pdfs if f != filename]
+    _ensure_pdfs_loaded()
+    _embedded_pdfs = [f for f in (_embedded_pdfs or []) if f != filename]
 
     fpath = os.path.join(UPLOAD_DIR, filename)
     if os.path.exists(fpath):
         os.remove(fpath)
-    print(f"[worker] Deleted PDF: {filename} ({len(ids_to_delete)} chunks removed)")
+    print(f"[worker] Deleted PDF: {filename}")
 
 
 def merge_pdfs(filenames: list[str], output_name: str) -> str:
@@ -473,7 +493,19 @@ async def translate_pdf_stream(filename: str, target_language: str):
 
     loader = PyPDFLoader(fpath)
     docs = loader.load()
-    full_text = "\n\n".join(doc.page_content for doc in docs)
+    raw_text = "\n\n".join(doc.page_content for doc in docs)
+
+    # ── Clean PDF-extracted text ──────────────────────────────────────────
+    import re
+    # Replace soft hyphens / hyphenated line-breaks (word- \n word → wordword)
+    cleaned = re.sub(r'-\n(\S)', r'\1', raw_text)
+    # Merge single newlines within a paragraph into a space (PDF line wrapping)
+    cleaned = re.sub(r'(?<!\n)\n(?!\n)', ' ', cleaned)
+    # Collapse 3+ consecutive newlines to two (paragraph break)
+    cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+    # Remove excessive spaces
+    cleaned = re.sub(r'[ \t]{2,}', ' ', cleaned)
+    full_text = cleaned.strip()
 
     MAX_CHARS = 6000
     truncated = len(full_text) > MAX_CHARS
@@ -492,7 +524,9 @@ async def translate_pdf_stream(filename: str, target_language: str):
                 f"Translate the following document text into {target_language}. "
                 "Output ONLY the translated text — no introductions, no explanations, "
                 "no preamble, no meta-commentary. "
-                "Preserve the original structure, headings, and paragraphs exactly."
+                "Format the output as clean, readable prose: separate paragraphs with "
+                "a blank line, preserve section headings if present, and do NOT add "
+                "any extra symbols, bullet points, or markdown that were not in the original."
             ),
         },
         {"role": "user", "content": full_text},

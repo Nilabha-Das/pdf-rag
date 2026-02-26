@@ -49,6 +49,3 @@ html.light .border-slate-600 { border-color: #e2e8f0 !important; }
 
 html.light .bg-green-900\/40 { background-color: #dcfce7 !important; }
 html.light .bg-red-900\/40   { background-color: #fee2e2 !important; }
-
-/* Clerk UserButton has its own shadow DOM — let the iframe handle itself */
-html.light .cl-userButtonPopoverCard { background: #f1f5f9; border-color: #cbd5e1; }

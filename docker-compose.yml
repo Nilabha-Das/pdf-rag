@@ -1,3 +1,6 @@
+# Local development stack.
+# FastEmbed runs inside the Python process — no separate embedding service needed.
+# Groq is used as the LLM — no local Ollama required.
 services:
   qdrant:
     image: qdrant/qdrant
@@ -7,21 +10,5 @@ services:
     volumes:
       - qdrant_data:/qdrant/storage
 
-  ollama:
-    image: ollama/ollama
-    ports:
-      - "11434:11434"
-    volumes:
-      - ollama_data:/root/.ollama
-    # Uncomment the block below if you have an NVIDIA GPU:
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: all
-    #           capabilities: [gpu]
-
 volumes:
   qdrant_data:
-  ollama_data:

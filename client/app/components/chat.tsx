@@ -2,20 +2,17 @@
 
 import * as React from 'react';
 import Image from 'next/image';
-
-const IS_LOCAL = typeof window !== 'undefined' && window.location.hostname === 'localhost';
-const API_BASE = IS_LOCAL ? 'http://localhost:8000' : 'https://pdf-rag-iwnh.onrender.com';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
   Send, User, Loader2, Paperclip, CheckCircle, XCircle,
-  Mic, MicOff, Copy, Check, Download, Pencil, X, FileText, Eye,
-  Globe, GitMerge, ArrowLeft, Trash2, FolderOpen,
+  Mic, MicOff, Copy, Check, Download, Pencil, X, FileText, FolderOpen, Trash2,
 } from 'lucide-react';
-import type { Message } from './types';
+import { API_BASE } from '../../lib/config';
+import { PDFLibraryPanel } from './pdf-library-panel';
+import type { Message, PdfEntry } from './types';
 
 type UploadStatus = 'idle' | 'uploading' | 'embedding' | 'success' | 'error';
-type PdfEntry = { name: string; displayName: string; objectUrl: string };
 
 interface ChatProps {
   sessionId: string;
@@ -23,6 +20,9 @@ interface ChatProps {
   onMessagesChange: (sessionId: string, messages: Message[]) => void;
   /** Called once after each complete user↔assistant exchange so the parent can persist the session. */
   onSaveSession?: (sessionId: string, messages: Message[]) => void;
+  /** PDF library shared across all sessions — owned by AppShell so it survives session switches. */
+  pdfLibrary: PdfEntry[];
+  setPdfLibrary: React.Dispatch<React.SetStateAction<PdfEntry[]>>;
 }
 
 export const ChatComponent: React.FC<ChatProps> = ({
@@ -30,6 +30,8 @@ export const ChatComponent: React.FC<ChatProps> = ({
   initialMessages,
   onMessagesChange,
   onSaveSession,
+  pdfLibrary,
+  setPdfLibrary,
 }) => {
   const [messages, setMessages] = React.useState<Message[]>(initialMessages);
   const [input, setInput] = React.useState('');
@@ -50,13 +52,9 @@ export const ChatComponent: React.FC<ChatProps> = ({
   const [hoveredMsgIndex, setHoveredMsgIndex] = React.useState<number | null>(null);
 
   // ── PDF library ───────────────────────────────────────────────────────────
-  const [pdfLibrary, setPdfLibrary] = React.useState<PdfEntry[]>([]);
-  const [previewPdfName, setPreviewPdfName] = React.useState<string | null>(null);
+  // pdfLibrary + setPdfLibrary come from AppShell so the library persists across session switches.
   const [showPdfLibrary, setShowPdfLibrary] = React.useState(false);
-  const [mergeSelected, setMergeSelected] = React.useState<string[]>([]);
-  const [mergeName, setMergeName] = React.useState('');
   const [mergeLoading, setMergeLoading] = React.useState(false);
-  const [perPdfLang, setPerPdfLang] = React.useState<Record<string, string>>({});
   const [translatingPdf, setTranslatingPdf] = React.useState<string | null>(null);
 
   const recognitionRef = React.useRef<SpeechRecognition | null>(null);
@@ -65,15 +63,7 @@ export const ChatComponent: React.FC<ChatProps> = ({
   const exportMenuRef = React.useRef<HTMLDivElement>(null);
   const pendingUploadRef = React.useRef<{ displayName: string; objectUrl: string } | null>(null);
 
-  // Cleanup all blob URLs on unmount
-  React.useEffect(() => {
-    return () => {
-      pdfLibrary.forEach((p) => {
-        if (p.objectUrl.startsWith('blob:')) URL.revokeObjectURL(p.objectUrl);
-      });
-    };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  // Blob URL cleanup lives in AppShell where pdfLibrary state is owned.
 
   // Auto-dismiss upload status pill 2 s after success (file appears as a chip)
   React.useEffect(() => {
@@ -306,20 +296,17 @@ export const ChatComponent: React.FC<ChatProps> = ({
       if (entry?.objectUrl.startsWith('blob:')) URL.revokeObjectURL(entry.objectUrl);
       return prev.filter((p) => p.name !== name);
     });
-    setMergeSelected((prev) => prev.filter((n) => n !== name));
-    if (previewPdfName === name) setPreviewPdfName(null);
   };
 
-  // ── Merge selected PDFs ───────────────────────────────────────────────────
-  const handleMerge = async () => {
-    if (mergeSelected.length < 2 || mergeLoading) return;
-    const outName = mergeName.trim() || `merged_${Date.now()}`;
+  // ── Merge selected PDFs (called from PDFLibraryPanel) ────────────────────
+  const handleMerge = async (filenames: string[], outputName: string) => {
+    if (filenames.length < 2 || mergeLoading) return;
     setMergeLoading(true);
     try {
       const res = await fetch(`${API_BASE}/pdf/merge`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ filenames: mergeSelected, output_name: outName }),
+        body: JSON.stringify({ filenames, output_name: outputName }),
       });
       if (!res.ok) throw new Error('Merge failed');
       const data = await res.json();
@@ -330,8 +317,6 @@ export const ChatComponent: React.FC<ChatProps> = ({
         ...prev.filter((p) => p.name !== serverName),
         { name: serverName, displayName: serverName, objectUrl },
       ]);
-      setMergeSelected([]);
-      setMergeName('');
       // Show embedding progress in the bottom pill
       setUploadedFileName(serverName);
       setUploadedFileServerName(serverName);
@@ -507,31 +492,8 @@ export const ChatComponent: React.FC<ChatProps> = ({
     try {
       const history = messages.map((m) => ({ role: m.role, content: m.content }));
 
-      // ── Step 1: Wake up Render free tier by pinging health endpoint ──
-      const setWaking = (msg: string) =>
-        setMessages((prev) => {
-          const updated = [...prev];
-          updated[updated.length - 1] = { role: 'assistant', content: msg };
-          return updated;
-        });
-
-      // Ping until server responds (up to ~3 min for Render cold start)
-      const MAX_WAKE_ATTEMPTS = 12;
-      let serverAwake = false;
-      for (let w = 0; w < MAX_WAKE_ATTEMPTS; w++) {
-        if (w > 0) setWaking(`⏳ Server is waking up… (${w * 15}s elapsed, please wait)`);
-        try {
-          const ping = await fetch(`${API_BASE}/`, { method: 'GET' });
-          if (ping.ok) { serverAwake = true; break; }
-        } catch { /* still sleeping */ }
-        await new Promise((r) => setTimeout(r, 15_000));
-      }
-      if (!serverAwake) throw new Error('Server unreachable after 3 minutes');
-
-      // Clear waking message
-      setWaking('');
-
-      // ── Step 2: Send actual chat request (server is now awake) ──
+      // Send the chat request; retry on 50x (Render may be waking from sleep).
+      // The app-shell already pings GET / on mount to pre-warm the server.
       let res: Response | null = null;
       const MAX_CHAT_RETRIES = 3;
       for (let attempt = 0; attempt < MAX_CHAT_RETRIES; attempt++) {
@@ -1003,144 +965,18 @@ export const ChatComponent: React.FC<ChatProps> = ({
         </div>
       </div>
 
-      {/* ── PDF Library Panel ────────────────────────────────────────────────── */}
+      {/* ── PDF Library Panel ── */}
       {showPdfLibrary && (
-        <div className="w-[45%] flex flex-col border-l border-slate-700 bg-slate-900 shrink-0">
-          {/* Panel header */}
-          <div className="flex items-center gap-2 px-4 py-3 border-b border-slate-700 shrink-0">
-            {previewPdfName && (
-              <button
-                onClick={() => setPreviewPdfName(null)}
-                className="text-slate-400 hover:text-white transition-colors shrink-0"
-                title="Back to library"
-              >
-                <ArrowLeft size={16} />
-              </button>
-            )}
-            <span className="text-sm font-medium text-white flex-1 truncate">
-              {previewPdfName ?? `PDF Library (${pdfLibrary.length})`}
-            </span>
-            <button
-              onClick={() => { setShowPdfLibrary(false); setPreviewPdfName(null); }}
-              className="text-slate-500 hover:text-white transition-colors"
-              title="Close"
-            >
-              <X size={16} />
-            </button>
-          </div>
-
-          {/* Preview mode — show iframe */}
-          {previewPdfName ? (
-            <iframe
-              src={pdfLibrary.find((p) => p.name === previewPdfName)?.objectUrl}
-              className="flex-1 w-full"
-              title="PDF Preview"
-            />
-          ) : (
-            /* Library list mode */
-            <>
-              <div className="flex-1 overflow-y-auto p-3 space-y-2">
-                {pdfLibrary.length === 0 ? (
-                  <div className="flex flex-col items-center gap-3 mt-16 text-center px-6">
-                    <FolderOpen size={36} className="text-slate-700" />
-                    <p className="text-xs text-slate-500">No PDFs yet.<br />Upload a PDF to get started.</p>
-                  </div>
-                ) : (
-                  pdfLibrary.map((pdf) => (
-                    <div key={pdf.name} className="bg-slate-800 rounded-xl p-3 space-y-2">
-                      {/* Name row: checkbox + icon + name + preview + delete */}
-                      <div className="flex items-center gap-2">
-                        <input
-                          type="checkbox"
-                          checked={mergeSelected.includes(pdf.name)}
-                          onChange={(e) =>
-                            setMergeSelected((prev) =>
-                              e.target.checked ? [...prev, pdf.name] : prev.filter((n) => n !== pdf.name)
-                            )
-                          }
-                          className="accent-blue-500 shrink-0"
-                          title="Select for merge"
-                        />
-                        <FileText size={13} className="text-slate-400 shrink-0" />
-                        <span className="text-xs text-slate-200 flex-1 truncate" title={pdf.displayName}>
-                          {pdf.displayName}
-                        </span>
-                        <button
-                          onClick={() => setPreviewPdfName(pdf.name)}
-                          title="Preview"
-                          className="p-1 text-slate-500 hover:text-blue-400 transition-colors"
-                        >
-                          <Eye size={13} />
-                        </button>
-                        <button
-                          onClick={() => handleDeletePdf(pdf.name)}
-                          title="Remove from library"
-                          className="p-1 text-slate-500 hover:text-red-400 transition-colors"
-                        >
-                          <Trash2 size={13} />
-                        </button>
-                      </div>
-                      {/* Translate row */}
-                      <div className="flex items-center gap-2 pl-5">
-                        <Globe size={11} className="text-slate-500 shrink-0" />
-                        <select
-                          value={perPdfLang[pdf.name] ?? 'French'}
-                          onChange={(e) =>
-                            setPerPdfLang((prev) => ({ ...prev, [pdf.name]: e.target.value }))
-                          }
-                          className="flex-1 text-xs bg-slate-700 border border-slate-600 rounded px-2 py-1 text-slate-300 outline-none"
-                        >
-                          {['French', 'Spanish', 'German', 'Chinese', 'Japanese', 'Arabic', 'Hindi', 'Portuguese', 'Russian', 'Italian'].map((l) => (
-                            <option key={l} value={l}>{l}</option>
-                          ))}
-                        </select>
-                        <button
-                          onClick={() => handleTranslate(pdf.name, perPdfLang[pdf.name] ?? 'French')}
-                          disabled={translatingPdf !== null || loading}
-                          className="flex items-center gap-1 text-xs px-2.5 py-1 rounded bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-40 transition-colors shrink-0"
-                        >
-                          {translatingPdf === pdf.name
-                            ? <Loader2 size={11} className="animate-spin" />
-                            : <Globe size={11} />}
-                          Translate
-                        </button>
-                      </div>
-                    </div>
-                  ))
-                )}
-              </div>
-
-              {/* Merge bar — appears when 2+ are selected */}
-              {mergeSelected.length >= 2 && (
-                <div className="shrink-0 border-t border-slate-700 p-3 space-y-2">
-                  <p className="text-xs text-slate-400 flex items-center gap-1.5">
-                    <GitMerge size={12} />
-                    Merging {mergeSelected.length} PDFs
-                  </p>
-                  <div className="flex gap-2">
-                    <input
-                      type="text"
-                      value={mergeName}
-                      onChange={(e) => setMergeName(e.target.value)}
-                      placeholder="merged.pdf"
-                      className="flex-1 text-xs bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-white placeholder-slate-500 outline-none"
-                    />
-                    <button
-                      onClick={handleMerge}
-                      disabled={mergeLoading}
-                      className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded bg-green-700 hover:bg-green-600 text-white disabled:opacity-40 transition-colors shrink-0"
-                    >
-                      {mergeLoading
-                        ? <Loader2 size={11} className="animate-spin" />
-                        : <GitMerge size={11} />}
-                      Merge
-                    </button>
-                  </div>
-                </div>
-              )}
-            </>
-          )}
-        </div>
+        <PDFLibraryPanel
+          pdfLibrary={pdfLibrary}
+          loading={loading}
+          translatingPdf={translatingPdf}
+          mergeLoading={mergeLoading}
+          onDelete={handleDeletePdf}
+          onTranslate={handleTranslate}
+          onMerge={handleMerge}
+          onClose={() => setShowPdfLibrary(false)}
+        />
       )}
 
     </div>
