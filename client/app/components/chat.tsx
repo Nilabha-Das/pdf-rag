@@ -3,7 +3,7 @@
 import * as React from 'react';
 import Image from 'next/image';
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? 'http://localhost:8000';
+const API_BASE = '/backend';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
