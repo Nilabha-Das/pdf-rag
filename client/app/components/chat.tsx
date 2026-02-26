@@ -193,14 +193,46 @@ export const ChatComponent: React.FC<ChatProps> = ({
     const objUrl = URL.createObjectURL(file);
     pendingUploadRef.current = { displayName: file.name, objectUrl: objUrl };
 
+    // ── Retry loop: Render free tier returns 503 while waking from sleep ──
+    let res: Response | null = null;
+    const MAX_UPLOAD_RETRIES = 8;
+    for (let attempt = 0; attempt < MAX_UPLOAD_RETRIES; attempt++) {
+      if (attempt > 0) {
+        // Show visible feedback while waiting for Render to wake up
+        setUploadedFileName(`Server waking up… attempt ${attempt + 1}/${MAX_UPLOAD_RETRIES} (please wait)`);
+        await new Promise((r) => setTimeout(r, 15_000));
+      }
+      try {
+        const formData = new FormData();
+        formData.append('pdf', file);
+        res = await fetch(`${API_BASE}/upload/pdf`, {
+          method: 'POST',
+          body: formData,
+        });
+        if (res.ok) break;                        // success — exit retry loop
+        if (res.status === 503 || res.status === 502) continue; // still sleeping
+        break;                                    // other HTTP error — stop retrying
+      } catch {
+        // Network error — server probably still starting
+        if (attempt === MAX_UPLOAD_RETRIES - 1) {
+          setUploadStatus('error');
+          setUploadedFileName('Upload failed — server unreachable');
+          e.target.value = '';
+          return;
+        }
+        continue;
+      }
+    }
+
+    if (!res || !res.ok) {
+      setUploadStatus('error');
+      setUploadedFileName(`Upload failed (status ${res?.status ?? 'unknown'})`);
+      e.target.value = '';
+      return;
+    }
+
+    setUploadedFileName(file.name);
     try {
-      const formData = new FormData();
-      formData.append('pdf', file);
-      const res = await fetch(`${API_BASE}/upload/pdf`, {
-        method: 'POST',
-        body: formData,
-      });
-      if (!res.ok) throw new Error('Upload failed');
       const data = await res.json();
       const serverFilename: string = data.filename ?? file.name;
       setUploadedFileServerName(serverFilename);
@@ -249,8 +281,7 @@ export const ChatComponent: React.FC<ChatProps> = ({
               clearInterval(pollInterval);
             }
           }
-        } catch {
-          // non-critical — keep polling
+        } catch {  // non-critical — keep polling
         }
       }, 2000);
     } catch {
@@ -475,16 +506,42 @@ export const ChatComponent: React.FC<ChatProps> = ({
 
     try {
       const history = messages.map((m) => ({ role: m.role, content: m.content }));
-      const res = await fetch(`${API_BASE}/chat/stream`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          message: trimmed,
-          history,
-          active_pdfs: pdfLibrary.map((p) => p.name),
-        }),
+
+      // ── Retry loop for 503 (Render free tier cold start) ──
+      let res: Response | null = null;
+      const MAX_CHAT_RETRIES = 5;
+      for (let attempt = 0; attempt < MAX_CHAT_RETRIES; attempt++) {
+        if (attempt > 0) {
+          setMessages((prev) => {
+            const updated = [...prev];
+            updated[updated.length - 1] = { role: 'assistant', content: `⏳ Server is waking up… (attempt ${attempt + 1}/${MAX_CHAT_RETRIES}, please wait 15s)` };
+            return updated;
+          });
+          await new Promise((r) => setTimeout(r, 15_000));
+        }
+        try {
+          res = await fetch(`${API_BASE}/chat/stream`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ message: trimmed, history, active_pdfs: pdfLibrary.map((p) => p.name) }),
+          });
+          if (res.ok) break;
+          if (res.status === 503 || res.status === 502) continue;
+          break;
+        } catch {
+          if (attempt === MAX_CHAT_RETRIES - 1) throw new Error('Server unreachable');
+          continue;
+        }
+      }
+
+      // Clear the "waking up" placeholder before streaming real tokens
+      setMessages((prev) => {
+        const updated = [...prev];
+        updated[updated.length - 1] = { role: 'assistant', content: '' };
+        return updated;
       });
-      if (!res.ok || !res.body) throw new Error('Stream failed');
+
+      if (!res || !res.ok || !res.body) throw new Error('Stream failed');
 
       const reader = res.body.getReader();
       const decoder = new TextDecoder();

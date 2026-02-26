@@ -47,6 +47,11 @@ export const AppShell: React.FC = () => {
     sessionsRef.current = sessions;
   }, [sessions]);
 
+  // ── Ping backend on mount to wake Render free-tier from sleep ─────────
+  React.useEffect(() => {
+    fetch(`${API_BASE}/`).catch(() => {});
+  }, []);
+
   // ── Load history from backend on mount ──────────────────────────────────
   React.useEffect(() => {
     if (!userId) return;
