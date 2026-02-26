@@ -250,19 +250,23 @@ def _retrieve_per_pdf(
 
 def _build_messages(context: str, query: str, history: list[dict] | None = None, num_pdfs: int = 1) -> list:
     """Build the message list sent to the LLM, including conversation history (#9)."""
-    pdf_phrase = f"{num_pdfs} PDF{'s' if num_pdfs > 1 else ''}" if num_pdfs > 1 else "the provided PDF"
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                f"You are a helpful AI assistant. The user has uploaded {pdf_phrase}. "
-                "Answer the user's question based only on the provided context excerpts, "
-                "which may come from multiple documents. When relevant, mention which document "
-                "the information comes from. If the answer is not in the context, say "
-                "'I couldn't find that information in the provided PDF(s).'"
-            ),
-        },
-    ]
+    if num_pdfs == 0 or not context.strip():
+        system_content = (
+            "You are a helpful AI assistant. "
+            "No PDF has been uploaded yet. "
+            "Answer the user's question as helpfully as possible using your general knowledge, "
+            "and let them know they can upload a PDF for document-specific answers."
+        )
+    else:
+        pdf_phrase = f"{num_pdfs} PDF{'s' if num_pdfs > 1 else ''}" if num_pdfs > 1 else "the provided PDF"
+        system_content = (
+            f"You are a helpful AI assistant. The user has uploaded {pdf_phrase}. "
+            "Answer the user's question based only on the provided context excerpts, "
+            "which may come from multiple documents. When relevant, mention which document "
+            "the information comes from. If the answer is not in the context, say "
+            "'I couldn't find that information in the provided PDF(s).'"
+        )
+    messages = [{"role": "system", "content": system_content}]
     # Inject last 6 messages (3 exchanges) as conversation memory
     if history:
         for turn in history[-6:]:
@@ -272,7 +276,7 @@ def _build_messages(context: str, query: str, history: list[dict] | None = None,
                 messages.append({"role": role, "content": content})
     messages.append({
         "role": "user",
-        "content": f"Context:\n{context}\n\nQuestion: {query}",
+        "content": f"Context:\n{context}\n\nQuestion: {query}" if context.strip() else query,
     })
     return messages
 
@@ -295,11 +299,21 @@ async def stream_chat_with_pdf(
 ):
     """Yields typed event dicts: {type: 'token', data: str} and {type: 'sources', data: list}."""
 
+    QDRANT_TIMEOUT = 12  # seconds — fail fast on Render free tier instead of hanging
+
     if active_pdfs:
         # Per-PDF filtered retrieval — guarantees every file contributes chunks
-        raw_hits = await asyncio.get_running_loop().run_in_executor(
-            None, _retrieve_per_pdf, query, active_pdfs
-        )
+        try:
+            raw_hits = await asyncio.wait_for(
+                asyncio.get_running_loop().run_in_executor(
+                    None, _retrieve_per_pdf, query, active_pdfs
+                ),
+                timeout=QDRANT_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            raw_hits = []
+            print("[worker] Qdrant query timed out — answering without PDF context.")
+
         # Build context and source list from raw Qdrant ScoredPoint objects
         context_parts = []
         sources = []
@@ -316,10 +330,17 @@ async def stream_chat_with_pdf(
             })
         context = "\n\n".join(context_parts)
         num_pdfs = len(active_pdfs)
-    else:
-        # Fallback: global retrieval (no active_pdfs list provided)
-        store = get_vector_store()
-        relevant_docs = await store.as_retriever(search_kwargs={"k": 6}).ainvoke(query)
+    elif _embedded_pdfs:
+        # PDFs exist in Qdrant but none is explicitly active — global fallback
+        try:
+            store = get_vector_store()
+            relevant_docs = await asyncio.wait_for(
+                store.as_retriever(search_kwargs={"k": 6}).ainvoke(query),
+                timeout=QDRANT_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            relevant_docs = []
+            print("[worker] Qdrant global query timed out — answering without PDF context.")
         context = "\n\n".join(doc.page_content for doc in relevant_docs)
         sources = [
             {
@@ -330,6 +351,11 @@ async def stream_chat_with_pdf(
             for d in relevant_docs
         ]
         num_pdfs = 1
+    else:
+        # No PDFs uploaded at all — answer directly without touching Qdrant
+        context = ""
+        sources = []
+        num_pdfs = 0
 
     async for chunk in get_llm().astream(_build_messages(context, query, history, num_pdfs)):
         if chunk.content:

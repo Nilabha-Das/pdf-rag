@@ -164,11 +164,15 @@ async def chat_stream(req: ChatRequest):
         raise HTTPException(status_code=400, detail="message is required.")
 
     async def event_generator():
-        async for event in stream_chat_with_pdf(
-            req.message, req.history, req.active_pdfs or None
-        ):
-            # event is already {"type": "token"|"sources", "data": ...}
-            yield f"data: {json.dumps(event)}\n\n"
+        try:
+            async for event in stream_chat_with_pdf(
+                req.message, req.history, req.active_pdfs or None
+            ):
+                # event is already {"type": "token"|"sources", "data": ...}
+                yield f"data: {json.dumps(event)}\n\n"
+        except Exception as exc:
+            # Surface the error as an SSE event so the frontend can display it
+            yield f"data: {json.dumps({'type': 'error', 'data': str(exc)})}\n\n"
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")

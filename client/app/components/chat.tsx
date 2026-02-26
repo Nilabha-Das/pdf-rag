@@ -572,8 +572,11 @@ export const ChatComponent: React.FC<ChatProps> = ({
                 };
                 return updated;
               });
+            } else if (parsed.type === 'error') {
+              throw new Error(parsed.data ?? 'Server error');
             }
-          } catch {
+          } catch (parseErr) {
+            if (parseErr instanceof Error && parseErr.message !== 'Unexpected token') throw parseErr;
             // skip malformed chunks
           }
         }
