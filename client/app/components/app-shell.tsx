@@ -7,7 +7,8 @@ import type { Message, Session } from './types';
 
 export type { Message, Session };
 
-const API_BASE = '/backend';
+const IS_LOCAL = typeof window !== 'undefined' && window.location.hostname === 'localhost';
+const API_BASE = IS_LOCAL ? 'http://localhost:8000' : 'https://pdf-rag-iwnh.onrender.com';
 
 function generateId() {
   return Math.random().toString(36).slice(2) + Date.now().toString(36);

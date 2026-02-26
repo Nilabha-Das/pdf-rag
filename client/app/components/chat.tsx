@@ -3,7 +3,8 @@
 import * as React from 'react';
 import Image from 'next/image';
 
-const API_BASE = '/backend';
+const IS_LOCAL = typeof window !== 'undefined' && window.location.hostname === 'localhost';
+const API_BASE = IS_LOCAL ? 'http://localhost:8000' : 'https://pdf-rag-iwnh.onrender.com';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
@@ -205,9 +206,9 @@ export const ChatComponent: React.FC<ChatProps> = ({
       setUploadedFileServerName(serverFilename);
       setUploadStatus('embedding');
 
-      // Poll /upload/status until embedding finishes (max ~60s)
+      // Poll /upload/status until embedding finishes (max ~10 min for Render cold start + model download)
       let pollCount = 0;
-      const MAX_POLLS = 30; // 30 × 2s = 60s timeout
+      const MAX_POLLS = 300; // 300 × 2s = 10 min timeout
       const pollInterval = setInterval(async () => {
         pollCount += 1;
         if (pollCount >= MAX_POLLS) {
@@ -293,7 +294,7 @@ export const ChatComponent: React.FC<ChatProps> = ({
       const data = await res.json();
       const serverName: string = data.filename;
       // Add merged PDF to library using its server download URL (no local blob)
-      const objectUrl = `http://localhost:8000/pdf/download/${encodeURIComponent(serverName)}`;
+      const objectUrl = `${API_BASE}/pdf/download/${encodeURIComponent(serverName)}`;
       setPdfLibrary((prev) => [
         ...prev.filter((p) => p.name !== serverName),
         { name: serverName, displayName: serverName, objectUrl },
@@ -307,7 +308,7 @@ export const ChatComponent: React.FC<ChatProps> = ({
       let count = 0;
       const poll = setInterval(async () => {
         count++;
-        if (count >= 30) { setUploadStatus('success'); clearInterval(poll); return; }
+        if (count >= 300) { setUploadStatus('success'); clearInterval(poll); return; } // 300 × 2s = 10 min
         try {
           const sr = await fetch(`${API_BASE}/upload/status?filename=${encodeURIComponent(serverName)}`);
           if (sr.ok) {
