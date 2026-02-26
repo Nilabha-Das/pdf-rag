@@ -15,6 +15,7 @@ from worker import (
     process_pdf, chat_with_pdf, stream_chat_with_pdf, get_suggestions,
     get_embedding_status, list_embedded_pdfs, delete_pdf_from_collection,
     merge_pdfs, translate_pdf_stream, UPLOAD_DIR as WORKER_UPLOAD_DIR,
+    _get_fastembed_model,
 )
 from database import init_db, get_sessions, upsert_session, delete_session
 
@@ -25,6 +26,15 @@ app = FastAPI(title="PDF RAG API")
 
 # Initialise SQLite chat-history database
 init_db()
+
+
+@app.on_event("startup")
+async def _preload_models():
+    """Pre-download and cache the embedding model at startup.
+    This runs once when Render boots the server, so the first upload
+    doesn't have to wait for a ~67 MB model download."""
+    import threading
+    threading.Thread(target=_get_fastembed_model, daemon=True).start()
 
 app.add_middleware(
     CORSMiddleware,

@@ -15,9 +15,9 @@ from qdrant_client.models import Distance, VectorParams, PointStruct, Filter, Fi
 QDRANT_URL  = os.getenv("QDRANT_URL",  "http://localhost:6333")
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY", None)
 COLLECTION  = "pdf-rag"
-EMBED_MODEL = "nomic-ai/nomic-embed-text-v1.5"  # fastembed model name
-CHAT_MODEL  = "llama-3.3-70b-versatile"          # Groq free tier — very fast
-VECTOR_SIZE = 768                                 # nomic-embed-text output dimension
+EMBED_MODEL = "BAAI/bge-small-en-v1.5"  # 67 MB — 4× smaller than nomic, fast on Render free tier
+CHAT_MODEL  = "llama-3.3-70b-versatile"  # Groq free tier — very fast
+VECTOR_SIZE = 384                         # bge-small output dimension
 UPLOAD_DIR  = os.path.join(os.path.dirname(__file__), "uploads")
 
 # ── FastEmbed singleton (downloads model once, then stays in memory) ───────────
@@ -65,13 +65,25 @@ def get_qdrant_client() -> QdrantClient:
 
 
 def ensure_collection(client: QdrantClient):
-    existing = [c.name for c in client.get_collections().collections]
-    if COLLECTION not in existing:
+    existing = {c.name: c for c in client.get_collections().collections}
+    if COLLECTION in existing:
+        # Check if vector size matches — recreate if it changed (e.g. model switch)
+        info = client.get_collection(COLLECTION)
+        current_size = info.config.params.vectors.size
+        if current_size != VECTOR_SIZE:
+            print(f"[worker] Collection vector size mismatch ({current_size} vs {VECTOR_SIZE}) — recreating.")
+            client.delete_collection(COLLECTION)
+            client.create_collection(
+                collection_name=COLLECTION,
+                vectors_config=VectorParams(size=VECTOR_SIZE, distance=Distance.COSINE),
+            )
+            print(f"[worker] Collection '{COLLECTION}' recreated with size={VECTOR_SIZE}.")
+    else:
         client.create_collection(
             collection_name=COLLECTION,
             vectors_config=VectorParams(size=VECTOR_SIZE, distance=Distance.COSINE),
         )
-        print(f"[worker] Collection '{COLLECTION}' created.")
+        print(f"[worker] Collection '{COLLECTION}' created with size={VECTOR_SIZE}.")
 
 
 def reset_collection(client: QdrantClient):
